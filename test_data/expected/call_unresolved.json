@@ -1,0 +1,8 @@
+{
+  "case": "вопрос не решён",
+  "expected_status": "completed",
+  "min_score": null,
+  "max_score": null,
+  "must_have_violations": [],
+  "notes": "заполняет участник 5 после записи аудио"
+}

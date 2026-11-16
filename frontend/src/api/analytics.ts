@@ -1,0 +1,2 @@
+// Вызовы /analytics/*.
+export {};

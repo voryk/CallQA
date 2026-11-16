@@ -1,0 +1,2 @@
+// Настройки Playwright.
+export {};

@@ -1,0 +1,13 @@
+.env
+*.pyc
+__pycache__/
+.venv/
+node_modules/
+dist/
+.pytest_cache/
+.ruff_cache/
+playwright-report/
+/data/
+/models/
+test_data/audio/*
+!test_data/audio/.gitkeep
