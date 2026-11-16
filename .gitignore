@@ -1,13 +1,40 @@
+# Секреты и локальные настройки
 .env
-*.pyc
-__pycache__/
-.venv/
-node_modules/
-dist/
-.pytest_cache/
-.ruff_cache/
-playwright-report/
+.env.*
+!.env.example
+
+# Данные и модели
 /data/
 /models/
-test_data/audio/*
-!test_data/audio/.gitkeep
+
+# Аудиозаписи не попадают в Git, кроме синтетических тестовых (имя начинается с synthetic_)
+*.wav
+*.mp3
+*.ogg
+!test_data/audio/synthetic_*.wav
+!test_data/audio/synthetic_*.mp3
+!test_data/audio/synthetic_*.ogg
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+playwright-report/
+test-results/
+
+# ОС и редакторы
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

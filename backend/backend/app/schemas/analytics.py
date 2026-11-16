@@ -1,0 +1,1 @@
+"""Схемы overview и trends."""

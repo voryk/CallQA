@@ -1,0 +1,8 @@
+{
+  "note": "Только синтетические записи. Добавьте аудио в test_data/audio.",
+  "calls": [
+    {"file": "call_ok.wav", "expected": "expected/call_ok.json"},
+    {"file": "call_rude.mp3", "expected": "expected/call_rude.json"},
+    {"file": "call_unresolved.ogg", "expected": "expected/call_unresolved.json"}
+  ]
+}

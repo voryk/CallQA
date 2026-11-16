@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16
+    env_file: ../.env
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      retries: 10
+    networks: [internal]
+  redis:
+    image: redis:7
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+    networks: [internal]
+  backend:
+    build: {context: .., dockerfile: infrastructure/docker/backend.Dockerfile}
+    env_file: ../.env
+    volumes: [appdata:/data, ../models:/models]
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
+    networks: [internal]
+  worker:
+    build: {context: .., dockerfile: infrastructure/docker/worker.Dockerfile}
+    env_file: ../.env
+    volumes: [appdata:/data, ../models:/models]
+    depends_on: {postgres: {condition: service_healthy}, redis: {condition: service_healthy}}
+    networks: [internal]
+  ollama:
+    image: ollama/ollama
+    profiles: [llm]
+    volumes: [../models/ollama:/root/.ollama]
+    networks: [internal]
+  frontend:
+    build: {context: .., dockerfile: infrastructure/docker/frontend.Dockerfile}
+    ports: ["8080:80"]
+    depends_on: [backend]
+    networks: [internal, public]
+volumes: {pgdata: {}, redisdata: {}, appdata: {}}
+networks:
+  internal: {internal: true}   # без доступа в интернет
+  public: {}
