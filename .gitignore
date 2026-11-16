@@ -1,0 +1,11 @@
+data/audio/*
+data/exports/*
+data/db/*
+models/*
+!**/.gitkeep
+.env
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.venv/
