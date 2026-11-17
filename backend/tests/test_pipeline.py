@@ -1,13 +1,15 @@
 from types import SimpleNamespace
 import io
 import wave
+import json
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import main, worker
+from app import main, worker, assessment
 from app import retention
 
 
@@ -173,4 +175,45 @@ def test_retry_failed_call(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json()['status'] == 'queued'
     assert queued == ['failed']
+    main.app.dependency_overrides.clear()
+
+
+def test_assessment_uses_local_ollama(monkeypatch):
+    seen = []
+
+    def fake_urlopen(request, timeout):
+        seen.append(request.full_url)
+        return io.BytesIO(json.dumps({'response': json.dumps({
+            'overall_score': 80, 'politeness': 90, 'completeness': 70,
+            'script_compliance': 75, 'resolution': 85, 'violations_percent': 10,
+            'sentiment': 'neutral', 'recommendations': ['Уточнить вопрос'],
+        })}).encode())
+
+    monkeypatch.setenv('OLLAMA_URL', 'http://ollama:11434')
+    monkeypatch.setattr(assessment, 'urlopen', fake_urlopen)
+    assert assessment.assess('Тестовый разговор')['overall_score'] == 80
+    assert seen == ['http://ollama:11434/api/generate']
+    monkeypatch.setenv('OLLAMA_URL', 'https://example.com')
+    with pytest.raises(ValueError):
+        assessment.assess('Тестовый разговор')
+
+
+def test_reassess_saved_transcript(tmp_path, monkeypatch):
+    engine = create_engine('sqlite:///' + str(tmp_path / 'assess.db'))
+    main.Base.metadata.create_all(engine)
+    session = sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(main, 'Session', session)
+    with session.begin() as db:
+        db.add(main.Call(id='done', original_name='done.wav', size_bytes=1,
+                         status='completed', transcript='Здравствуйте',
+                         assessment_status='failed'))
+    queued = []
+    class Queue:
+        def enqueue(self, func, call_id, **kwargs): queued.append((func, call_id))
+    monkeypatch.setattr(main, 'get_queue', lambda: Queue())
+    main.app.dependency_overrides[main.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
+    client = TestClient(main.app)
+    assert client.post('/api/calls/done/assess').status_code == 200
+    assert queued == [('app.worker.assess_call', 'done')]
+    assert client.post('/api/calls/done/assess').status_code == 409
     main.app.dependency_overrides.clear()

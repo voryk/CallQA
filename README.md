@@ -19,11 +19,11 @@ docker run --rm -v "C:\Users\super\Desktop\callguard-ai\models:/srv/models" call
 
 На текущей машине `tiny` уже установлена. Для качества, подходящего реальным звонкам, сравните `small` или `medium` на размеченной выборке и измерьте время обработки. После замены файлов модели перезапустите worker: `docker compose restart worker`.
 
-Оценка Qwen запускается отдельно: `docker compose --profile assessment up -d ollama`, затем `docker compose exec ollama ollama pull qwen2.5:3b`. До установки Ollama расшифровка работает, оценка получает статус `failed`. При работе приложение обращается к Ollama только по внутреннему адресу Docker. Записи и расшифровки не отправляются внешним сервисам.
+Оценка Qwen запускается отдельно: `docker compose --profile assessment up -d ollama`, затем `docker compose exec ollama ollama pull qwen2.5:3b`. До установки Ollama расшифровка работает, оценка получает статус `failed`. После запуска Qwen нажмите «Повторить оценку» у уже расшифрованного звонка; повторная загрузка аудио не нужна. При работе приложение обращается к Ollama только по внутреннему адресу Docker. Записи и расшифровки не отправляются внешним сервисам.
 
 ## Доступ и данные
 
-- Роли: `viewer` просматривает звонки и дашборд; `analyst` загружает записи, проверяет оценку и выгружает отчёты; `admin` имеет те же права и используется для администрирования.
+- Роли: `viewer` просматривает звонки и дашборд; `analyst` загружает записи, повторно запускает неудачные задания, проверяет оценку и выгружает отчёты; `admin` дополнительно видит журнал действий.
 - Пароли хранятся как Argon2-хеши. Сессии в Redis действуют 8 часов. Токен интерфейс хранит только в памяти вкладки.
 - Создать пользователя: `docker compose exec api python -m app.create_user NAME --role analyst`.
 - Сбросить пароль: `docker compose exec api python -m app.create_user NAME --reset-password`.
@@ -33,11 +33,13 @@ docker run --rm -v "C:\Users\super\Desktop\callguard-ai\models:/srv/models" call
 
 ## API и тесты
 
-Документация API: http://127.0.0.1:8000/docs. Основные маршруты: `POST /api/login`, `POST /api/calls`, `GET /api/calls/{id}`, `POST /api/calls/{id}/retry`, `POST /api/calls/{id}/review`, `GET /api/dashboard`, `GET /api/reports/csv`, `GET /api/reports/json`. Защищённые маршруты требуют заголовок `Authorization: Bearer <token>`.
+Документация API: http://127.0.0.1:8000/docs. Основные маршруты: `POST /api/login`, `POST /api/calls`, `GET /api/calls/{id}`, `POST /api/calls/{id}/retry`, `POST /api/calls/{id}/assess`, `POST /api/calls/{id}/review`, `GET /api/dashboard`, `GET /api/reports/csv`, `GET /api/reports/json`, `GET /api/audit` (только администратор). Дашборд показывает последние 14 дней. Защищённые маршруты требуют заголовок `Authorization: Bearer <token>`.
 
 `docker run --rm callguard-ai-api pytest -q` запускает backend тесты. `docker compose logs -f worker` показывает ошибки обработки. `docker compose stop` останавливает сервисы, сохраняя данные.
 
 ## Условия банковского внедрения
+
+Проверенное состояние проекта и решения, которые должен предоставить банк, собраны в [BANK_HANDOFF.md](BANK_HANDOFF.md).
 
 Текущая сборка подходит для локального пилота, но не для обработки реальных клиентских записей без решения следующих задач совместно с ИБ и ИТ банка:
 

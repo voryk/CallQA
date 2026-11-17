@@ -5,6 +5,7 @@ import './nav.css';
 import './auth.css';
 import './review.css';
 import './retry.css';
+import './trend.css';
 
 type Call = {
   id: string; original_name: string; status: string; size_bytes: number; created_at: string;
@@ -12,7 +13,7 @@ type Call = {
   assessment_status: string | null;
   assessment: {overall_score:number;violations_percent:number;sentiment:string;recommendations:string[]} | null;
 };
-type Dashboard = {total:number;queued:number;processing:number;completed:number;failed:number;assessed:number;average_score:number|null};
+type Dashboard = {total:number;queued:number;processing:number;completed:number;failed:number;assessed:number;average_score:number|null;trends:{date:string;count:number}[]};
 type AuditEvent = {id:string;actor:string;action:string;target_id:string|null;created_at:string};
 
 function App() {
@@ -92,6 +93,14 @@ function App() {
     await refresh();
   }
 
+  async function reassess(callId: string) {
+    const response = await fetch('/api/calls/' + callId + '/assess', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token }
+    });
+    if (!response.ok) { setError('Повторная оценка пока недоступна'); return; }
+    await refresh();
+  }
+
   async function logout() {
     await fetch('/api/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + token } });
     setToken(''); setCalls([]); setDashboard(null);
@@ -130,6 +139,7 @@ function App() {
       ['Всего звонков', dashboard?.total], ['Обработано', dashboard?.completed],
       ['В очереди', dashboard?.queued], ['Средняя оценка', dashboard?.average_score ?? '—']
     ].map(([label, value]) => <div className="metric" key={label}><span>{label}</span><strong>{value ?? '—'}</strong></div>)}</section>
+    {dashboard && <section><h2>Звонки за 14 дней</h2><div className="trend-chart">{dashboard.trends.map(point=><div className="trend-day" key={point.date} title={point.date + ': ' + point.count}><div className="trend-bar" style={{height: Math.max(4, point.count / Math.max(1, ...dashboard.trends.map(day=>day.count)) * 100) + '%'}}/><small>{point.date.slice(5)}</small></div>)}</div></section>}
     {role !== 'viewer' && <section><h2>Загрузка аудио</h2><p>WAV, MP3 или OGG, до 100 МБ</p>
       <label>Идентификатор оператора <input type="text" value={operatorId} onChange={e=>setOperatorId(e.target.value)} maxLength={64}/></label>
       <input type="file" accept=".wav,.mp3,.ogg" onChange={upload} disabled={busy}/>
@@ -141,7 +151,8 @@ function App() {
           <td>{call.original_name}
             {call.transcript !== null && <details><summary>Расшифровка</summary><p>{call.transcript}</p></details>}
             {call.assessment && <details><summary>Оценка: {call.assessment.overall_score}/100 ({call.assessment_status})</summary><p>Нарушения: {call.assessment.violations_percent}% · Тональность: {call.assessment.sentiment}</p><ul>{call.assessment.recommendations.map((item,i)=><li key={i}>{item}</li>)}</ul>{call.assessment_status === 'pending_review' && role !== 'viewer' && <div className="review-actions"><button onClick={()=>void review(call.id,'approved')}>Подтвердить</button><button onClick={()=>void review(call.id,'rejected')}>Отклонить</button></div>}</details>}
-            {call.assessment_status === 'failed' && <p className="error">Оценка недоступна</p>}
+            {call.assessment_status === 'failed' && <p className="error">Оценка недоступна. Проверьте локальную Qwen.</p>}
+            {call.assessment_status === 'failed' && call.status === 'completed' && role !== 'viewer' && <button onClick={()=>void reassess(call.id)}>Повторить оценку</button>}
             {call.error && <p className="error">{call.error}</p>}
             {call.status === 'failed' && role !== 'viewer' && <button onClick={()=>void retry(call.id)}>Повторить обработку</button>}
           </td>

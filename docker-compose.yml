@@ -47,6 +47,8 @@ services:
   ollama:
     image: ollama/ollama:latest
     profiles: ["assessment"]
+    environment:
+      OLLAMA_NO_CLOUD: "true"
     volumes:
       - ollamadata:/root/.ollama
   postgres:

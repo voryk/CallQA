@@ -329,6 +329,29 @@ def retry_call(call_id: str, user: Annotated[User, Depends(require_editor)]):
     return result
 
 
+@app.post('/api/calls/{call_id}/assess', response_model=CallOut)
+def reassess_call(call_id: str, user: Annotated[User, Depends(require_editor)]):
+    with Session.begin() as db:
+        call = db.get(Call, call_id, with_for_update=True)
+        if call is None:
+            raise HTTPException(404, 'Call not found')
+        if call.status != 'completed' or call.transcript is None:
+            raise HTTPException(409, 'Transcription unavailable')
+        if call.assessment_status not in {'failed', None}:
+            raise HTTPException(409, 'Assessment already queued or available')
+        call.assessment_status = 'queued'
+        result = CallOut.model_validate(call)
+    try:
+        get_queue().enqueue('app.worker.assess_call', call_id, job_id=str(uuid.uuid4()),
+                            retry=Retry(max=1, interval=30))
+    except Exception:
+        with Session.begin() as db:
+            db.get(Call, call_id).assessment_status = 'failed'
+        raise HTTPException(503, 'Queue unavailable')
+    audit(user.username, 'reassess', call_id)
+    return result
+
+
 @app.get('/api/dashboard')
 def dashboard(user: Annotated[User, Depends(require_user)]):
     with Session() as db:

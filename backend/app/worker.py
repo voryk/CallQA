@@ -1,4 +1,5 @@
 import os
+import logging
 from datetime import datetime, timezone
 
 from redis import Redis
@@ -8,6 +9,7 @@ from app.main import Call, REDIS_URL, STORAGE, Session
 from app.assessment import assess
 
 _model = None
+logger = logging.getLogger(__name__)
 
 
 def get_model():
@@ -52,22 +54,37 @@ def process_call(call_id: str):
             call.status = 'completed'
             call.finished_at = datetime.now(timezone.utc)
         try:
-            assessment = assess(transcript)
+            assess_call(call_id)
         except Exception:
-            with Session.begin() as db:
-                call = db.get(Call, call_id)
-                call.assessment_status = 'failed'
-        else:
-            with Session.begin() as db:
-                call = db.get(Call, call_id)
-                call.assessment = assessment
-                call.assessment_status = 'pending_review'
+            logger.exception('Assessment failed for call %s', call_id)
     except Exception:
         with Session.begin() as db:
             call = db.get(Call, call_id)
             call.status = 'failed'
             call.error = 'Transcription failed; inspect local worker logs'
             call.finished_at = datetime.now(timezone.utc)
+        raise
+
+
+def assess_call(call_id: str):
+    with Session.begin() as db:
+        call = db.get(Call, call_id)
+        if call is None or call.status != 'completed' or call.transcript is None:
+            raise ValueError('Completed transcription not found')
+        transcript = call.transcript
+        call.assessment_status = 'processing'
+    try:
+        assessment = assess(transcript)
+        with Session.begin() as db:
+            call = db.get(Call, call_id)
+            call.assessment = assessment
+            call.assessment_status = 'pending_review'
+            call.reviewed_by = None
+            call.reviewed_at = None
+    except Exception:
+        with Session.begin() as db:
+            call = db.get(Call, call_id)
+            call.assessment_status = 'failed'
         raise
 
 
