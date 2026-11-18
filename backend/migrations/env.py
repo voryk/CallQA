@@ -4,7 +4,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from app.main import Base
+from app.db import Base
+import app.models  # register tables in SQLAlchemy metadata
 
 config = context.config
 target_metadata = Base.metadata

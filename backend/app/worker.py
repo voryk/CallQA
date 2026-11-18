@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from redis import Redis
 from rq import Worker
 
-from app.main import Call, REDIS_URL, STORAGE, Session
+from app.config import REDIS_URL, STORAGE
+from app.db import Session
+from app.models import Call
 from app.assessment import assess
 
 _model = None

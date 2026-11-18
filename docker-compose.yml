@@ -36,6 +36,8 @@ services:
     depends_on:
       api:
         condition: service_started
+      ollama:
+        condition: service_healthy
   retention:
     build: ./backend
     command: sh -c "while true; do python -m app.retention; sleep 86400; done"
@@ -46,11 +48,15 @@ services:
         condition: service_started
   ollama:
     image: ollama/ollama:latest
-    profiles: ["assessment"]
     environment:
       OLLAMA_NO_CLOUD: "true"
     volumes:
       - ollamadata:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
   postgres:
     image: postgres:17
     environment:

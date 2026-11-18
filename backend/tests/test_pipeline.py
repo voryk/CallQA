@@ -9,16 +9,18 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import main, worker, assessment
-from app import retention
+from app import main, worker, assessment, retention, db as database, models, security, audit
+from app.api import auth, calls, reports
 
 
 def test_upload_and_transcription(tmp_path, monkeypatch):
     engine = create_engine('sqlite:///' + str(tmp_path / 'test.db'))
-    main.Base.metadata.create_all(engine)
+    database.Base.metadata.create_all(engine)
     session = sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(main, 'Session', session)
-    monkeypatch.setattr(main, 'STORAGE', tmp_path)
+    monkeypatch.setattr(calls, 'Session', session)
+    monkeypatch.setattr(reports, 'Session', session)
+    monkeypatch.setattr(audit, 'Session', session)
+    monkeypatch.setattr(calls, 'STORAGE', tmp_path)
     monkeypatch.setattr(worker, 'Session', session)
     monkeypatch.setattr(worker, 'STORAGE', tmp_path)
     queued = []
@@ -27,9 +29,9 @@ def test_upload_and_transcription(tmp_path, monkeypatch):
         def enqueue(self, func, call_id, **kwargs):
             queued.append(call_id)
 
-    monkeypatch.setattr(main, 'get_queue', lambda: Queue())
-    main.app.dependency_overrides[main.require_user] = lambda: SimpleNamespace(username='tester', role='analyst')
-    main.app.dependency_overrides[main.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
+    monkeypatch.setattr(calls, 'get_queue', lambda: Queue())
+    main.app.dependency_overrides[security.require_user] = lambda: SimpleNamespace(username='tester', role='analyst')
+    main.app.dependency_overrides[security.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
     client = TestClient(main.app)
     audio = io.BytesIO()
     with wave.open(audio, 'wb') as wav:
@@ -73,8 +75,8 @@ def test_upload_and_transcription(tmp_path, monkeypatch):
 
 
 def test_rejects_invalid_audio_extension(tmp_path, monkeypatch):
-    monkeypatch.setattr(main, 'STORAGE', tmp_path)
-    main.app.dependency_overrides[main.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
+    monkeypatch.setattr(calls, 'STORAGE', tmp_path)
+    main.app.dependency_overrides[security.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
     response = TestClient(main.app).post('/api/calls', files={'file': ('bad.txt', b'x')})
     assert response.status_code == 415
     main.app.dependency_overrides.clear()
@@ -88,11 +90,14 @@ def test_api_requires_authentication():
 
 def test_login_role_and_logout(tmp_path, monkeypatch):
     engine = create_engine('sqlite:///' + str(tmp_path / 'auth.db'))
-    main.Base.metadata.create_all(engine)
+    database.Base.metadata.create_all(engine)
     session = sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(main, 'Session', session)
+    monkeypatch.setattr(auth, 'Session', session)
+    monkeypatch.setattr(calls, 'Session', session)
+    monkeypatch.setattr(security, 'Session', session)
+    monkeypatch.setattr(audit, 'Session', session)
     with session.begin() as db:
-        db.add(main.User(username='reader', password_hash=main.password_hasher.hash('long-test-password'),
+        db.add(models.User(username='reader', password_hash=security.password_hasher.hash('long-test-password'),
                          role='viewer', active=True))
 
     class FakeRedis:
@@ -115,7 +120,8 @@ def test_login_role_and_logout(tmp_path, monkeypatch):
             return True
 
     fake = FakeRedis()
-    monkeypatch.setattr(main, 'Redis', SimpleNamespace(from_url=lambda _: fake))
+    monkeypatch.setattr(auth, 'Redis', SimpleNamespace(from_url=lambda _: fake))
+    monkeypatch.setattr(security, 'Redis', SimpleNamespace(from_url=lambda _: fake))
     client = TestClient(main.app)
     assert client.post('/api/login', json={'username': 'reader', 'password': 'wrong'}).status_code == 401
     response = client.post('/api/login', json={'username': 'reader', 'password': 'long-test-password'})
@@ -134,7 +140,7 @@ def test_login_role_and_logout(tmp_path, monkeypatch):
 
 def test_retention_removes_only_expired_calls(tmp_path, monkeypatch):
     engine = create_engine('sqlite:///' + str(tmp_path / 'retention.db'))
-    main.Base.metadata.create_all(engine)
+    database.Base.metadata.create_all(engine)
     session = sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(retention, 'Session', session)
     monkeypatch.setattr(retention, 'STORAGE', tmp_path)
@@ -143,34 +149,35 @@ def test_retention_removes_only_expired_calls(tmp_path, monkeypatch):
     (tmp_path / 'old.wav').write_bytes(b'old')
     (tmp_path / 'new.wav').write_bytes(b'new')
     with session.begin() as db:
-        db.add(main.Call(id='old', original_name='old.wav', size_bytes=3,
+        db.add(models.Call(id='old', original_name='old.wav', size_bytes=3,
                          storage_name='old.wav', created_at=now - timedelta(days=31)))
-        db.add(main.Call(id='new', original_name='new.wav', size_bytes=3,
+        db.add(models.Call(id='new', original_name='new.wav', size_bytes=3,
                          storage_name='new.wav', created_at=now - timedelta(days=1)))
     assert retention.purge_expired(now) == 1
     assert not (tmp_path / 'old.wav').exists()
     assert (tmp_path / 'new.wav').exists()
     with session() as db:
-        assert db.get(main.Call, 'old') is None
-        assert db.get(main.Call, 'new') is not None
+        assert db.get(models.Call, 'old') is None
+        assert db.get(models.Call, 'new') is not None
 
 
 def test_retry_failed_call(tmp_path, monkeypatch):
     engine = create_engine('sqlite:///' + str(tmp_path / 'retry.db'))
-    main.Base.metadata.create_all(engine)
+    database.Base.metadata.create_all(engine)
     session = sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(main, 'Session', session)
-    monkeypatch.setattr(main, 'STORAGE', tmp_path)
+    monkeypatch.setattr(calls, 'Session', session)
+    monkeypatch.setattr(calls, 'STORAGE', tmp_path)
+    monkeypatch.setattr(audit, 'Session', session)
     (tmp_path / 'failed.wav').write_bytes(b'audio')
     with session.begin() as db:
-        db.add(main.Call(id='failed', original_name='failed.wav', size_bytes=5,
+        db.add(models.Call(id='failed', original_name='failed.wav', size_bytes=5,
                          storage_name='failed.wav', status='failed'))
     queued = []
     class Queue:
         def fetch_job(self, job_id): return None
         def enqueue(self, func, call_id, **kwargs): queued.append(call_id)
-    monkeypatch.setattr(main, 'get_queue', lambda: Queue())
-    main.app.dependency_overrides[main.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
+    monkeypatch.setattr(calls, 'get_queue', lambda: Queue())
+    main.app.dependency_overrides[security.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
     response = TestClient(main.app).post('/api/calls/failed/retry')
     assert response.status_code == 200
     assert response.json()['status'] == 'queued'
@@ -200,18 +207,19 @@ def test_assessment_uses_local_ollama(monkeypatch):
 
 def test_reassess_saved_transcript(tmp_path, monkeypatch):
     engine = create_engine('sqlite:///' + str(tmp_path / 'assess.db'))
-    main.Base.metadata.create_all(engine)
+    database.Base.metadata.create_all(engine)
     session = sessionmaker(engine, expire_on_commit=False)
-    monkeypatch.setattr(main, 'Session', session)
+    monkeypatch.setattr(calls, 'Session', session)
+    monkeypatch.setattr(audit, 'Session', session)
     with session.begin() as db:
-        db.add(main.Call(id='done', original_name='done.wav', size_bytes=1,
+        db.add(models.Call(id='done', original_name='done.wav', size_bytes=1,
                          status='completed', transcript='Здравствуйте',
                          assessment_status='failed'))
     queued = []
     class Queue:
         def enqueue(self, func, call_id, **kwargs): queued.append((func, call_id))
-    monkeypatch.setattr(main, 'get_queue', lambda: Queue())
-    main.app.dependency_overrides[main.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
+    monkeypatch.setattr(calls, 'get_queue', lambda: Queue())
+    main.app.dependency_overrides[security.require_editor] = lambda: SimpleNamespace(username='tester', role='analyst')
     client = TestClient(main.app)
     assert client.post('/api/calls/done/assess').status_code == 200
     assert queued == [('app.worker.assess_call', 'done')]

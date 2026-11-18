@@ -8,18 +8,29 @@
 
 1. Скопируйте `.env.example` в `.env` и задайте уникальный `POSTGRES_PASSWORD`.
 2. Запустите `docker compose up -d --build`.
-3. Создайте первую учётную запись: `docker compose exec api python -m app.create_user admin --role admin`. Пароль вводится интерактивно, минимум 12 символов. Если пользователь `admin` уже существует, выполните `docker compose exec api python -m app.create_user admin --reset-password`.
-4. Откройте http://127.0.0.1:5173. Состояние системы: http://127.0.0.1:8000/health/ready.
+3. Установите модели Whisper и Qwen по инструкциям ниже до загрузки первого звонка.
+4. Создайте первую учётную запись: `docker compose exec api python -m app.create_user admin --role admin`. Пароль вводится интерактивно, минимум 12 символов. Если пользователь `admin` уже существует, выполните `docker compose exec api python -m app.create_user admin --reset-password`.
+5. Откройте http://127.0.0.1:5173. Состояние системы: http://127.0.0.1:8000/health/ready.
 
 Для модели Whisper поместите готовую CTranslate2 модель в `models/whisper/` (включая `model.bin` и `config.json`). Для начальной проверки можно скачать модель в период подготовки:
 
 ```powershell
-docker run --rm -v "C:\Users\super\Desktop\callguard-ai\models:/srv/models" callguard-ai-api python -m app.provision tiny
+docker run --rm -v "${PWD}/models:/srv/models" callguard-ai-api python -m app.provision tiny
 ```
 
-На текущей машине `tiny` уже установлена. Для качества, подходящего реальным звонкам, сравните `small` или `medium` на размеченной выборке и измерьте время обработки. После замены файлов модели перезапустите worker: `docker compose restart worker`.
+`tiny` подходит только для начальной проверки. Для качества, подходящего реальным звонкам, сравните `small` или `medium` на размеченной выборке и измерьте время обработки. После замены файлов модели перезапустите worker: `docker compose restart worker`.
 
-Оценка Qwen запускается отдельно: `docker compose --profile assessment up -d ollama`, затем `docker compose exec ollama ollama pull qwen2.5:3b`. До установки Ollama расшифровка работает, оценка получает статус `failed`. После запуска Qwen нажмите «Повторить оценку» у уже расшифрованного звонка; повторная загрузка аудио не нужна. При работе приложение обращается к Ollama только по внутреннему адресу Docker. Записи и расшифровки не отправляются внешним сервисам.
+Ollama запускается вместе с остальными сервисами. Один раз установите модель: `docker compose exec ollama ollama pull qwen2.5:3b`. Проверьте её командой `docker compose exec ollama ollama list`. Если оценка ранее завершилась ошибкой, нажмите «Повторить оценку» у расшифрованного звонка; повторная загрузка аудио не нужна. При работе приложение обращается к Ollama только по внутреннему адресу Docker. Записи и расшифровки не отправляются внешним сервисам.
+
+## Структура
+
+- `backend/app/main.py` — создание FastAPI и подключение маршрутов.
+- `backend/app/api/` — маршруты авторизации, звонков, отчётов и проверки готовности.
+- `backend/app/models.py`, `schemas.py`, `db.py` — таблицы, схемы API и подключение к PostgreSQL.
+- `backend/app/security.py`, `audit.py`, `queue.py`, `config.py` — общие зависимости приложения.
+- `backend/app/worker.py`, `assessment.py`, `retention.py` — фоновые задания, локальная оценка и удаление по сроку хранения.
+- `backend/migrations/`, `backend/tests/` — миграции и тесты.
+- `frontend/src/` — интерфейс React; `docker-compose.yml` — локальный запуск.
 
 ## Доступ и данные
 

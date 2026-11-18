@@ -4,7 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from app.main import AuditEvent, Call, STORAGE, Session
+from app.config import STORAGE
+from app.db import Session
+from app.models import AuditEvent, Call
 
 
 def purge_expired(now: datetime | None = None) -> int:

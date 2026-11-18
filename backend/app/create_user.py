@@ -1,7 +1,10 @@
 import argparse
 import getpass
 
-from app.main import Session, User, audit, password_hasher
+from app.audit import audit
+from app.db import Session
+from app.models import User
+from app.security import password_hasher
 
 
 def main():
