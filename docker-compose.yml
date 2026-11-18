@@ -1,0 +1,100 @@
+name: callguard-v4
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:5173:8080"
+    networks: [default, ingress]
+    depends_on:
+      - api
+  api:
+    image: callguard-api:local
+    build: ./backend
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --no-proxy-headers"
+    environment: &app_env
+      DATABASE_URL: postgresql+psycopg://callguard:${POSTGRES_PASSWORD:-local_dev_only_change_me}@postgres:5432/callguard
+      REDIS_URL: redis://redis:6379/0
+      TRUST_LOCAL_PROXY: "1"
+      STORAGE_DIR: /srv/storage
+      WHISPER_MODEL_PATH: /srv/models/whisper
+      WHISPER_DEVICE: cpu
+      OPERATOR_CHANNEL: ${OPERATOR_CHANNEL:-}
+      WHISPER_THREADS: ${WHISPER_THREADS:-4}
+      WHISPER_BEAM_SIZE: ${WHISPER_BEAM_SIZE:-1}
+      ENABLE_LLM: ${ENABLE_LLM:-0}
+      WHISPER_COMPUTE_TYPE: int8
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
+    volumes: &app_volumes
+      - storage:/srv/storage
+      - ./models:/srv/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      retries: 12
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  worker:
+    image: callguard-api:local
+    build: ./backend
+    command: python -m app.worker
+    environment: *app_env
+    volumes: *app_volumes
+    depends_on:
+      api:
+        condition: service_healthy
+  retention:
+    image: callguard-api:local
+    build: ./backend
+    command: sh -c "while true; do python -m app.recovery; python -m app.retention; sleep 300; done"
+    environment: *app_env
+    volumes: *app_volumes
+    depends_on:
+      api:
+        condition: service_healthy
+  ollama:
+    image: ollama/ollama:0.5.13
+    profiles: [llm]
+    environment:
+      OLLAMA_NO_CLOUD: "true"
+    volumes:
+      - ollamadata:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+  postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_USER: callguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_dev_only_change_me}
+      POSTGRES_DB: callguard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U callguard -d callguard"]
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:7.4.5-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+networks:
+  default:
+    internal: true
+  ingress: {}
+volumes:
+  storage:
+  pgdata:
+  redisdata:
+  ollamadata:
