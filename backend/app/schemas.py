@@ -20,6 +20,7 @@ class CallOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    processing_seconds: float | None = None
     transcript: str | None
     segments: list | None
     language: str | None

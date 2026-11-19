@@ -11,3 +11,4 @@ av>=13,<18
 alembic>=1.14,<2
 pytest>=8,<10
 httpx>=0.27,<1
+reportlab>=4.2,<5

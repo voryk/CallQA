@@ -27,6 +27,12 @@ class Call(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    @property
+    def processing_seconds(self) -> float | None:
+        if self.started_at is None or self.finished_at is None:
+            return None
+        return round(max(0, (self.finished_at - self.started_at).total_seconds()), 2)
+
 
 class User(Base):
     __tablename__ = 'users'

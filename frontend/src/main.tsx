@@ -9,12 +9,36 @@ import './trend.css';
 
 type Call = {
   id: string; original_name: string; status: string; size_bytes: number; created_at: string;
-  transcript: string | null; error: string | null; operator_id: string | null;
+  transcript: string | null; segments: {start:number;end:number;text:string;role?:string}[] | null;
+  processing_seconds: number | null; error: string | null; operator_id: string | null;
   assessment_status: string | null;
-  assessment: {overall_score:number;violations_percent:number;sentiment:string;recommendations:string[]} | null;
+  assessment: {
+    overall_score:number;violations_percent:number;sentiment:string;recommendations:string[];
+    findings?: {quote:string;issue:string;reason:string;score_impact:string}[];
+  } | null;
 };
 type Dashboard = {total:number;queued:number;processing:number;completed:number;failed:number;assessed:number;average_score:number|null;trends:{date:string;count:number}[]};
 type AuditEvent = {id:string;actor:string;action:string;target_id:string|null;created_at:string};
+
+function highlightEvidence(transcript: string, findings: {quote:string}[] = []) {
+  const matches: {start:number;end:number}[] = [];
+  for (const finding of findings) {
+    if (!finding.quote) continue;
+    const start = transcript.indexOf(finding.quote);
+    if (start >= 0) matches.push({start, end: start + finding.quote.length});
+  }
+  matches.sort((a, b) => a.start - b.start);
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  matches.forEach((match, index) => {
+    if (match.start < cursor) return;
+    if (match.start > cursor) parts.push(transcript.slice(cursor, match.start));
+    parts.push(<mark key={'evidence-' + index}>{transcript.slice(match.start, match.end)}</mark>);
+    cursor = match.end;
+  });
+  if (cursor < transcript.length) parts.push(transcript.slice(cursor));
+  return parts;
+}
 
 function App() {
   const [calls, setCalls] = useState<Call[]>([]);
@@ -66,7 +90,7 @@ function App() {
     } catch (cause) { setError(String(cause)); }
   }
 
-  async function download(format: 'csv' | 'json') {
+  async function download(format: 'csv' | 'json' | 'pdf') {
     const response = await fetch('/api/reports/' + format, { headers: { Authorization: 'Bearer ' + token } });
     if (!response.ok) { setError('Не удалось скачать отчёт'); return; }
     const url = URL.createObjectURL(await response.blob());
@@ -145,19 +169,24 @@ function App() {
       <input type="file" accept=".wav,.mp3,.ogg" onChange={upload} disabled={busy}/>
       {busy && <p>Загрузка…</p>}{error && <p className="error">{error}</p>}
     </section>}
-    <section id="calls"><div className="sectionhead"><h2>Звонки <small>({calls.length})</small></h2><div id="reports">{role !== 'viewer' && <><button onClick={()=>void download('csv')}>Скачать CSV</button><button onClick={()=>void download('json')}>Скачать JSON</button></>}</div></div>
+    <section id="calls"><div className="sectionhead"><h2>Звонки <small>({calls.length})</small></h2><div id="reports">{role !== 'viewer' && <><button onClick={()=>void download('csv')}>KPI CSV</button><button onClick={()=>void download('json')}>KPI JSON</button><button onClick={()=>void download('pdf')}>Отчёт PDF</button></>}</div></div>
       <table><thead><tr><th>Файл</th><th>Статус</th><th>Размер</th><th>Дата</th></tr></thead>
         <tbody>{calls.map(call => <tr key={call.id}>
           <td>{call.original_name}
-            {call.transcript !== null && <details><summary>Расшифровка</summary><p>{call.transcript}</p></details>}
-            {call.assessment && <details><summary>Оценка: {call.assessment.overall_score}/100 ({call.assessment_status})</summary><p>Нарушения: {call.assessment.violations_percent}% · Тональность: {call.assessment.sentiment}</p><ul>{call.assessment.recommendations.map((item,i)=><li key={i}>{item}</li>)}</ul>{call.assessment_status === 'pending_review' && role !== 'viewer' && <div className="review-actions"><button onClick={()=>void review(call.id,'approved')}>Подтвердить</button><button onClick={()=>void review(call.id,'rejected')}>Отклонить</button></div>}</details>}
+            {call.transcript !== null && <details><summary>Контекст звонка</summary><p className="transcript">{highlightEvidence(call.transcript, call.assessment?.findings)}</p>
+              {call.segments?.length ? <div className="speaker-segments">{call.segments.map((segment, i)=><p key={i}><b>{segment.role === 'operator' ? 'Оператор' : segment.role === 'customer' ? 'Клиент' : 'Роль не определена'}:</b> {segment.text}</p>)}</div> : null}
+            </details>}
+            {call.assessment && <details><summary>Оценка: {call.assessment.overall_score}/100 ({call.assessment_status})</summary><p>Нарушения: {call.assessment.violations_percent}% · Тональность: {call.assessment.sentiment}</p>
+              {call.assessment.findings?.map((finding,i)=><div className="finding" key={i}><b>{finding.issue}</b><p>Фрагмент: «{finding.quote}»</p><p>Почему снижена оценка: {finding.reason}</p><p>Влияние: {finding.score_impact}</p></div>)}
+              {!call.assessment.findings?.length && <p>Подтверждённых фрагментов проблем не указано.</p>}
+              <ul>{call.assessment.recommendations.map((item,i)=><li key={i}>{item}</li>)}</ul>{call.assessment_status === 'pending_review' && role !== 'viewer' && <div className="review-actions"><button onClick={()=>void review(call.id,'approved')}>Подтвердить</button><button onClick={()=>void review(call.id,'rejected')}>Отклонить</button></div>}</details>}
             {call.assessment_status === 'failed' && <p className="error">Оценка недоступна. Проверьте локальную Qwen.</p>}
             {call.assessment_status === 'failed' && call.status === 'completed' && role !== 'viewer' && <button onClick={()=>void reassess(call.id)}>Повторить оценку</button>}
             {call.error && <p className="error">{call.error}</p>}
             {call.status === 'failed' && role !== 'viewer' && <button onClick={()=>void retry(call.id)}>Повторить обработку</button>}
           </td>
           <td>{call.status}</td><td>{(call.size_bytes / 1048576).toFixed(2)} МБ</td>
-          <td>{new Date(call.created_at).toLocaleString('ru-RU')}</td>
+          <td>{new Date(call.created_at).toLocaleString('ru-RU')}{call.processing_seconds !== null && <small className="processing-time">Транскрипция: {call.processing_seconds.toFixed(2)} с</small>}</td>
         </tr>)}</tbody>
       </table>
       {calls.length === 0 && <p>Записей пока нет.</p>}

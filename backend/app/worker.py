@@ -9,6 +9,7 @@ from app.config import REDIS_URL, STORAGE
 from app.db import Session
 from app.models import Call
 from app.assessment import assess
+from app.roles import classify_segments
 
 _model = None
 logger = logging.getLogger(__name__)
@@ -45,8 +46,10 @@ def process_call(call_id: str):
         if path.parent != STORAGE:
             raise ValueError('Invalid storage path')
         segment_iter, info = get_model().transcribe(str(path), beam_size=5, vad_filter=True)
-        segments = [{'start': round(s.start, 3), 'end': round(s.end, 3), 'text': s.text.strip()}
-                    for s in segment_iter]
+        segments = classify_segments([
+            {'start': round(s.start, 3), 'end': round(s.end, 3), 'text': s.text.strip()}
+            for s in segment_iter
+        ])
         transcript = ' '.join(s['text'] for s in segments).strip()
         with Session.begin() as db:
             call = db.get(Call, call_id)

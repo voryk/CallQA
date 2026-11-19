@@ -1,12 +1,22 @@
 import csv
+import html
 import io
 import json
+import os
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer
 from sqlalchemy import select
 
 from app.audit import audit
@@ -15,6 +25,91 @@ from app.models import Call, User
 from app.security import require_editor, require_user
 
 router = APIRouter()
+
+
+def _register_pdf_font() -> str:
+    candidates = (
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+        Path(os.getenv('WINDIR', r'C:\Windows')) / 'Fonts' / 'arial.ttf',
+    )
+    font_path = next((path for path in candidates if path.is_file()), None)
+    if font_path is None:
+        raise HTTPException(503, 'Unicode font for PDF report is unavailable')
+    font_name = 'CallGuardDejaVu'
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+    return font_name
+
+
+def _pdf_paragraph(value: object, style: ParagraphStyle) -> Paragraph:
+    return Paragraph(html.escape(str(value)).replace('\n', '<br/>'), style)
+
+
+@router.get('/api/reports/pdf')
+def export_pdf_report(user: Annotated[User, Depends(require_editor)]):
+    audit(user.username, 'export_pdf')
+    with Session() as db:
+        calls = db.scalars(select(Call).order_by(Call.created_at.desc())).all()
+
+    font_name = _register_pdf_font()
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CallGuardTitle', parent=styles['Title'], fontName=font_name,
+        fontSize=18, leading=24, alignment=TA_LEFT, textColor=colors.HexColor('#173b31'),
+    )
+    heading_style = ParagraphStyle(
+        'CallGuardHeading', parent=styles['Heading2'], fontName=font_name,
+        fontSize=12, leading=16, textColor=colors.HexColor('#087d49'),
+    )
+    body_style = ParagraphStyle(
+        'CallGuardBody', parent=styles['BodyText'], fontName=font_name,
+        fontSize=9, leading=13, spaceAfter=4,
+    )
+    story = [
+        _pdf_paragraph('Отчёт по качеству звонков', title_style),
+        Spacer(1, 10),
+        _pdf_paragraph(f'Сформирован: {datetime.now(timezone.utc).astimezone().isoformat(timespec="minutes")}', body_style),
+        _pdf_paragraph(f'Записей: {len(calls)}', body_style),
+        Spacer(1, 12),
+    ]
+    for call in calls:
+        assessment_data = call.assessment or {}
+        approved = call.assessment_status == 'approved'
+        score = assessment_data.get('overall_score') if approved else None
+        violations = assessment_data.get('violations_percent') if approved else None
+        call_lines = [
+            _pdf_paragraph(f'Звонок: {call.original_name}', heading_style),
+            _pdf_paragraph(
+                f'Дата: {call.created_at.isoformat()} · Статус: {call.status} · '
+                f'Оценка: {score if score is not None else "не подтверждена"} · '
+                f'Нарушения: {str(violations) + "%" if violations is not None else "не подтверждены"}',
+                body_style,
+            ),
+        ]
+        if call.processing_seconds is not None:
+            call_lines.append(_pdf_paragraph(
+                f'Время транскрипции: {call.processing_seconds:.2f} с', body_style,
+            ))
+        for finding in assessment_data.get('findings') or []:
+            if not isinstance(finding, dict):
+                continue
+            call_lines.extend([
+                _pdf_paragraph(f'Проблема: {finding.get("issue", "не указана")}', body_style),
+                _pdf_paragraph(f'Фрагмент: «{finding.get("quote", "")}»', body_style),
+                _pdf_paragraph(f'Почему снижена оценка: {finding.get("reason", "не указано")}', body_style),
+                _pdf_paragraph(f'Влияние: {finding.get("score_impact", "не указано")}', body_style),
+            ])
+        for recommendation in assessment_data.get('recommendations') or []:
+            call_lines.append(_pdf_paragraph(f'Рекомендация: {recommendation}', body_style))
+        story.extend([KeepTogether(call_lines), Spacer(1, 10)])
+
+    output = io.BytesIO()
+    SimpleDocTemplate(output, pagesize=A4, title='CallGuard call quality report').build(story)
+    return Response(
+        output.getvalue(),
+        media_type='application/pdf',
+        headers={'Content-Disposition': 'attachment; filename="callguard-report.pdf"'},
+    )
 
 
 @router.get('/api/dashboard')
@@ -50,6 +145,7 @@ def export_report(format: str, user: Annotated[User, Depends(require_editor)]):
         rows = [{
             'id': c.id, 'date': c.created_at.isoformat(), 'operator_id': c.operator_id,
             'status': c.status, 'language': c.language,
+            'processing_seconds': c.processing_seconds,
             'overall_score': (c.assessment or {}).get('overall_score') if c.assessment_status == 'approved' else None,
             'violations_percent': (c.assessment or {}).get('violations_percent') if c.assessment_status == 'approved' else None,
             'sentiment': (c.assessment or {}).get('sentiment') if c.assessment_status == 'approved' else None,
@@ -60,7 +156,7 @@ def export_report(format: str, user: Annotated[User, Depends(require_editor)]):
                         headers={'Content-Disposition': 'attachment; filename="report.json"'})
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=['id', 'date', 'operator_id', 'status', 'language',
-                                               'overall_score', 'violations_percent', 'sentiment',
+                                               'processing_seconds', 'overall_score', 'violations_percent', 'sentiment',
                                                'average_response_seconds'])
     writer.writeheader()
     writer.writerows(rows)

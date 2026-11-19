@@ -2,6 +2,7 @@ from types import SimpleNamespace
 import io
 import wave
 import json
+import csv
 import pytest
 from datetime import datetime, timedelta, timezone
 
@@ -52,25 +53,42 @@ def test_upload_and_transcription(tmp_path, monkeypatch):
 
     monkeypatch.setattr(worker, 'get_model', lambda: Model())
     monkeypatch.setattr(worker, 'assess', lambda text: {
-        'overall_score': 85, 'violations_percent': 0, 'sentiment': 'neutral',
+        'overall_score': 85, 'violations_percent': 10, 'sentiment': 'neutral',
         'recommendations': ['Уточнить запрос клиента'],
+        'findings': [{
+            'quote': 'Привет', 'issue': 'Нет приветствия по стандарту',
+            'reason': 'Не использовано приветствие, предусмотренное скриптом.',
+            'score_impact': 'Снижена оценка вежливости.',
+        }],
     })
     worker.process_call(call_id)
     result = client.get(f'/api/calls/{call_id}').json()
     assert result['status'] == 'completed'
     assert result['transcript'] == 'Привет'
-    assert result['segments'] == [{'start': 0.0, 'end': 1.2, 'text': 'Привет'}]
+    assert result['segments'] == [{'start': 0.0, 'end': 1.2, 'text': 'Привет', 'role': 'unknown'}]
     assert result['language'] == 'ru'
     assert result['assessment_status'] == 'pending_review'
     assert result['assessment']['overall_score'] == 85
+    assert result['assessment']['findings'][0]['quote'] == 'Привет'
     assert client.get('/api/dashboard').json()['completed'] == 1
     assert client.get('/api/dashboard').json()['average_score'] is None
     assert client.get('/api/reports/json').json()[0]['overall_score'] is None
     reviewed = client.post(f'/api/calls/{call_id}/review', json={'decision': 'approved'})
     assert reviewed.status_code == 200
     assert reviewed.json()['reviewed_by'] == 'tester'
-    assert call_id in client.get('/api/reports/csv').text
-    assert client.get('/api/reports/json').json()[0]['overall_score'] == 85
+    json_report = client.get('/api/reports/json').json()[0]
+    assert json_report['overall_score'] == 85
+    assert json_report['violations_percent'] == 10
+    assert json_report['processing_seconds'] is not None
+    csv_report = client.get('/api/reports/csv')
+    csv_row = next(csv.DictReader(io.StringIO(csv_report.text.lstrip('\ufeff'))))
+    assert csv_row['id'] == call_id
+    assert csv_row['violations_percent'] == '10'
+    assert csv_row['processing_seconds']
+    pdf_report = client.get('/api/reports/pdf')
+    assert pdf_report.status_code == 200
+    assert pdf_report.headers['content-type'] == 'application/pdf'
+    assert pdf_report.content.startswith(b'%PDF')
     main.app.dependency_overrides.clear()
 
 
@@ -194,15 +212,53 @@ def test_assessment_uses_local_ollama(monkeypatch):
             'overall_score': 80, 'politeness': 90, 'completeness': 70,
             'script_compliance': 75, 'resolution': 85, 'violations_percent': 10,
             'sentiment': 'neutral', 'recommendations': ['Уточнить вопрос'],
+            'findings': [{
+                'quote': 'Тестовый разговор', 'issue': 'Недостаточно данных',
+                'reason': 'В разговоре нет подробностей запроса.',
+                'score_impact': 'Снижена полнота.',
+            }],
         })}).encode())
 
     monkeypatch.setenv('OLLAMA_URL', 'http://ollama:11434')
     monkeypatch.setattr(assessment, 'urlopen', fake_urlopen)
-    assert assessment.assess('Тестовый разговор')['overall_score'] == 80
+    result = assessment.assess('Тестовый разговор')
+    assert result['overall_score'] == 80
+    assert result['violations_percent'] == 10
+    assert result['findings'][0]['quote'] == 'Тестовый разговор'
     assert seen == ['http://ollama:11434/api/generate']
     monkeypatch.setenv('OLLAMA_URL', 'https://example.com')
     with pytest.raises(ValueError):
         assessment.assess('Тестовый разговор')
+
+
+def test_assessment_rejects_unverifiable_evidence(monkeypatch):
+    payload = {
+        'overall_score': 80, 'politeness': 90, 'completeness': 70,
+        'script_compliance': 75, 'resolution': 85, 'violations_percent': 10,
+        'sentiment': 'neutral', 'recommendations': [],
+        'findings': [{
+            'quote': 'Этой фразы нет в звонке', 'issue': 'Проблема',
+            'reason': 'Причина', 'score_impact': 'Снижение оценки',
+        }],
+    }
+
+    def fake_urlopen(request, timeout):
+        return io.BytesIO(json.dumps({'response': json.dumps(payload)}).encode())
+
+    monkeypatch.setenv('OLLAMA_URL', 'http://ollama:11434')
+    monkeypatch.setattr(assessment, 'urlopen', fake_urlopen)
+    with pytest.raises(ValueError, match='quote is not in transcript'):
+        assessment.assess('Настоящий текст звонка')
+
+
+def test_keyword_role_assignment():
+    from app.roles import classify_role, classify_segments
+
+    assert classify_role('Здравствуйте, чем могу помочь?') == 'operator'
+    assert classify_role('У меня не работает карта, подскажите') == 'customer'
+    assert classify_role('Здравствуйте, слушаю вас') == 'unknown'
+    segments = classify_segments([{'start': 0, 'end': 1, 'text': 'Меня зовут Анна'}])
+    assert segments[0]['role'] == 'operator'
 
 
 def test_reassess_saved_transcript(tmp_path, monkeypatch):
