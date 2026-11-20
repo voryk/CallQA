@@ -1,0 +1,13 @@
+services:
+  api:
+    volumes:
+      - ./backend/app:/srv/app:ro
+  worker:
+    volumes:
+      - ./backend/app:/srv/app:ro
+  retention:
+    volumes:
+      - ./backend/app:/srv/app:ro
+  frontend:
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
