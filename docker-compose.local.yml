@@ -1,0 +1,13 @@
+services:
+  api:
+    volumes:
+      - C:/Users/super/Desktop/CallQA/backend/app:/srv/app:ro
+  worker:
+    volumes:
+      - C:/Users/super/Desktop/CallQA/backend/app:/srv/app:ro
+  retention:
+    volumes:
+      - C:/Users/super/Desktop/CallQA/backend/app:/srv/app:ro
+  frontend:
+    volumes:
+      - C:/Users/super/Desktop/CallQA/frontend/dist:/usr/share/nginx/html:ro
